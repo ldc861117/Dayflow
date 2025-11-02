@@ -7,7 +7,9 @@ import Foundation
 
 final class GeminiDirectProvider: LLMProvider {
     private let apiKey: String
-    private let fileEndpoint = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+    private var fileEndpoint: String {
+        return GeminiEndpointResolver.uploadEndpoint()
+    }
     private let modelPreference: GeminiModelPreference
 
     private static let capacityErrorCodes: Set<Int> = [403, 429, 503]
@@ -33,7 +35,7 @@ final class GeminiDirectProvider: LLMProvider {
     }
 
     private func endpointForModel(_ model: GeminiModel) -> String {
-        return "https://generativelanguage.googleapis.com/v1beta/models/\(model.rawValue):generateContent"
+        return GeminiEndpointResolver.modelEndpoint(for: model.rawValue)
     }
     
     init(apiKey: String, preference: GeminiModelPreference = .default) {
