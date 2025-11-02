@@ -7,11 +7,46 @@
 
 import Foundation
 
+struct GeminiEndpointResolver {
+    private static let defaultBase = "https://generativelanguage.googleapis.com"
+    private static let defaults = UserDefaults.standard
+    
+    static func defaultBaseURL() -> String {
+        defaultBase
+    }
+    
+    static func isUsingCustomBase() -> Bool {
+        defaults.bool(forKey: "useCustomGeminiBaseURL")
+    }
+    
+    static func resolvedBaseURL() -> String {
+        guard isUsingCustomBase(),
+              let raw = defaults.string(forKey: "customGeminiBaseURL")?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            return defaultBase
+        }
+        var normalized = raw
+        if !normalized.contains("://") {
+            normalized = "https://\(normalized)"
+        }
+        while normalized.hasSuffix("/") {
+            normalized.removeLast()
+        }
+        return normalized.isEmpty ? defaultBase : normalized
+    }
+    
+    static func modelEndpoint(for model: String) -> String {
+        "\(resolvedBaseURL())/v1beta/models/\(model):generateContent"
+    }
+    
+    static func uploadEndpoint() -> String {
+        "\(resolvedBaseURL())/upload/v1beta/files"
+    }
+}
+
 class GeminiAPIHelper {
     static let shared = GeminiAPIHelper()
     private init() {}
-    
-    private let baseURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
     
     enum APIError: Error, LocalizedError {
         case invalidAPIKey
@@ -30,16 +65,25 @@ class GeminiAPIHelper {
         }
     }
     
-    // Test the API connection with a simple request
+    // Test the API connection with the current settings
     func testConnection(apiKey: String) async throws -> String {
         guard !apiKey.isEmpty else {
             throw APIError.invalidAPIKey
         }
         
-        let url = URL(string: "\(baseURL)?key=\(apiKey)")!
+        let endpoint = GeminiEndpointResolver.modelEndpoint(for: "gemini-2.5-flash-lite")
+        guard let url = URL(string: "\(endpoint)?key=\(apiKey)") else {
+            throw APIError.networkError("Invalid URL format")
+        }
+        
+        return try await performTestRequest(url: url, apiKey: apiKey)
+    }
+    
+    private func performTestRequest(url: URL, apiKey: String) async throws -> String {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
         
         // Simple test request
         let requestBody: [String: Any] = [
