@@ -11,7 +11,15 @@ class GeminiAPIHelper {
     static let shared = GeminiAPIHelper()
     private init() {}
     
-    private let baseURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
+    private func getBaseURL() -> String {
+        // Load custom base URL from UserDefaults if enabled
+        if UserDefaults.standard.bool(forKey: "useCustomGeminiBaseURL"),
+           let savedBaseURL = UserDefaults.standard.string(forKey: "geminiBaseURL"),
+           !savedBaseURL.isEmpty {
+            return savedBaseURL
+        }
+        return "https://generativelanguage.googleapis.com"
+    }
     
     enum APIError: Error, LocalizedError {
         case invalidAPIKey
@@ -36,7 +44,9 @@ class GeminiAPIHelper {
             throw APIError.invalidAPIKey
         }
         
-        let url = URL(string: "\(baseURL)?key=\(apiKey)")!
+        let baseURL = getBaseURL()
+        let endpointURL = "\(baseURL)/v1beta/models/gemini-2.5-flash-lite:generateContent"
+        let url = URL(string: "\(endpointURL)?key=\(apiKey)")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

@@ -7,10 +7,19 @@ import Foundation
 
 final class GeminiDirectProvider: LLMProvider {
     private let apiKey: String
-    private let fileEndpoint = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+    private let baseURL: String
     private let modelPreference: GeminiModelPreference
 
     private static let capacityErrorCodes: Set<Int> = [403, 429, 503]
+    private static let defaultBaseURL = "https://generativelanguage.googleapis.com"
+
+    private static func normalizeBaseURL(_ raw: String) -> String {
+        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
+        return trimmed.isEmpty ? defaultBaseURL : trimmed
+    }
 
     private struct ModelRunState {
         private let models: [GeminiModel]
@@ -31,14 +40,29 @@ final class GeminiDirectProvider: LLMProvider {
             return (fromModel, models[index])
         }
     }
+    
+    private var fileEndpoint: String {
+        return "\(baseURL)/upload/v1beta/files"
+    }
 
     private func endpointForModel(_ model: GeminiModel) -> String {
-        return "https://generativelanguage.googleapis.com/v1beta/models/\(model.rawValue):generateContent"
+        return "\(baseURL)/v1beta/models/\(model.rawValue):generateContent"
     }
     
-    init(apiKey: String, preference: GeminiModelPreference = .default) {
+    init(apiKey: String, preference: GeminiModelPreference = .default, baseURL: String? = nil) {
         self.apiKey = apiKey
         self.modelPreference = preference
+        
+        // Load custom base URL from parameter or UserDefaults, defaulting to Google's endpoint.
+        if let customBaseURL = baseURL, !customBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.baseURL = Self.normalizeBaseURL(customBaseURL)
+        } else if UserDefaults.standard.bool(forKey: "useCustomGeminiBaseURL"),
+                  let savedBaseURL = UserDefaults.standard.string(forKey: "geminiBaseURL"),
+                  !savedBaseURL.isEmpty {
+            self.baseURL = Self.normalizeBaseURL(savedBaseURL)
+        } else {
+            self.baseURL = Self.defaultBaseURL
+        }
     }
 
     private func categoriesSection(from descriptors: [LLMCategoryDescriptor]) -> String {
