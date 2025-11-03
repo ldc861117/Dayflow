@@ -54,6 +54,12 @@ struct SettingsView: View {
     @State private var geminiTitlePromptText = GeminiPromptDefaults.titleBlock
     @State private var geminiSummaryPromptText = GeminiPromptDefaults.summaryBlock
     @State private var geminiDetailedPromptText = GeminiPromptDefaults.detailedSummaryBlock
+    
+    // Gemini base URL customization
+    @State private var useCustomGeminiBaseURL: Bool = UserDefaults.standard.bool(forKey: "useCustomGeminiBaseURL")
+    @State private var geminiBaseURL: String = UserDefaults.standard.string(forKey: "geminiBaseURL") ?? "https://generativelanguage.googleapis.com"
+    @FocusState private var isGeminiBaseURLFocused: Bool
+    @State private var pendingScrollTarget: String? = nil
 
     // Ollama prompt customization
     @State private var ollamaPromptOverridesLoaded = false
@@ -92,20 +98,35 @@ struct SettingsView: View {
         formatter.countStyle = .file
         return formatter
     }()
+    
+    private var isGeminiConfigActive: Bool {
+        currentProvider == "gemini" || setupModalProvider == "gemini"
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 32) {
             sidebar
 
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
-                    tabContent
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 24) {
+                        tabContent
+                    }
+                    .padding(.top, 24)
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 24)
                 }
-                .padding(.top, 24)
-                .padding(.trailing, 16)
-                .padding(.bottom, 24)
+                .onChange(of: pendingScrollTarget) { target in
+                    guard let target else { return }
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        proxy.scrollTo(target, anchor: .center)
+                    }
+                    DispatchQueue.main.async {
+                        pendingScrollTarget = nil
+                    }
+                }
+                .frame(maxWidth: 600, alignment: .leading)
             }
-            .frame(maxWidth: 600, alignment: .leading)
 
             Spacer(minLength: 0)
         }
@@ -189,6 +210,23 @@ struct SettingsView: View {
         .onChange(of: useCustomOllamaSummaryPrompt) { _ in persistOllamaPromptOverridesIfReady() }
         .onChange(of: ollamaTitlePromptText) { _ in persistOllamaPromptOverridesIfReady() }
         .onChange(of: ollamaSummaryPromptText) { _ in persistOllamaPromptOverridesIfReady() }
+        .onChange(of: useCustomGeminiBaseURL) { newValue in
+            UserDefaults.standard.set(newValue, forKey: "useCustomGeminiBaseURL")
+            if newValue {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    pendingScrollTarget = "geminiBaseURLField"
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        isGeminiBaseURLFocused = true
+                    }
+                }
+            } else {
+                isGeminiBaseURLFocused = false
+                pendingScrollTarget = nil
+            }
+        }
+        .onChange(of: geminiBaseURL) { newValue in
+            UserDefaults.standard.set(newValue, forKey: "geminiBaseURL")
+        }
     }
 
     private var sidebar: some View {
@@ -520,6 +558,10 @@ struct SettingsView: View {
                     }
                 }
 
+                SettingsCard(title: "Gemini endpoint", subtitle: "Configure a custom base URL for Gemini API") {
+                    geminiEndpointConfigurationView
+                }
+
                 SettingsCard(title: "Gemini prompt customization", subtitle: "Override Dayflow's defaults to tailor card generation") {
                     geminiPromptCustomizationView
                 }
@@ -543,6 +585,58 @@ struct SettingsView: View {
         }
     }
 
+    private var geminiEndpointConfigurationView: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("By default, Dayflow uses Google's official Gemini API endpoint. Enable this option if you need to connect to a custom or self-hosted Gemini-compatible server.")
+                .font(.custom("Nunito", size: 12))
+                .foregroundColor(.black.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+            
+            Toggle(isOn: $useCustomGeminiBaseURL) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Use custom base URL")
+                        .font(.custom("Nunito", size: 14))
+                        .fontWeight(.semibold)
+                        .foregroundColor(.black.opacity(0.75))
+                    Text("Override the default Gemini API endpoint")
+                        .font(.custom("Nunito", size: 12))
+                        .foregroundColor(.black.opacity(0.55))
+                }
+            }
+            .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.25, green: 0.17, blue: 0)))
+            
+            if useCustomGeminiBaseURL {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Base URL")
+                        .font(.custom("Nunito", size: 13))
+                        .fontWeight(.semibold)
+                        .foregroundColor(.black.opacity(0.7))
+                    
+                    TextField("https://generativelanguage.googleapis.com", text: $geminiBaseURL)
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.custom("Nunito", size: 13))
+                        .foregroundColor(.black.opacity(0.85))
+                        .padding(12)
+                        .background(Color.white)
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(isGeminiBaseURLFocused ? Color(red: 0.25, green: 0.17, blue: 0) : Color.black.opacity(0.12), lineWidth: 1)
+                        )
+                        .focused($isGeminiBaseURLFocused)
+                    
+                    Text("The custom URL will be used for all Gemini API calls. Ensure your endpoint is compatible with Gemini's API format.")
+                        .font(.custom("Nunito", size: 11))
+                        .foregroundColor(.black.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .id("geminiBaseURLField")
+                .transition(.opacity.combined(with: .move(edge: .top)))
+                .animation(.easeInOut(duration: 0.2), value: useCustomGeminiBaseURL)
+            }
+        }
+    }
+    
     private var geminiPromptCustomizationView: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Overrides apply only when their toggle is on. Unchecked sections fall back to Dayflow's defaults.")
@@ -1073,6 +1167,14 @@ struct SettingsView: View {
                     UserDefaults.standard.set(encoded, forKey: "llmProviderType")
                 }
                 UserDefaults.standard.set("gemini", forKey: "selectedLLMProvider")
+                let preference = GeminiModelPreference.load()
+                selectedGeminiModel = preference.primary
+                savedGeminiModel = preference.primary
+            }
+        } else if let legacyProvider = UserDefaults.standard.string(forKey: "selectedLLMProvider") {
+            // Fall back to legacy string-based provider for older installs
+            currentProvider = legacyProvider
+            if legacyProvider == "gemini" {
                 let preference = GeminiModelPreference.load()
                 selectedGeminiModel = preference.primary
                 savedGeminiModel = preference.primary
