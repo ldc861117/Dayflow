@@ -41,6 +41,42 @@ final class GeminiDirectProvider: LLMProvider {
         return resolver.fileUploadEndpoint()
     }
     
+    private func resolveBaseURL() -> String {
+        let resolver = GeminiEndpointResolver.load()
+        return resolver.resolveBaseURL()
+    }
+    
+    private var isUsingCustomBase: Bool {
+        let resolver = GeminiEndpointResolver.load()
+        return resolver.useCustomBase && resolver.customBase != nil
+    }
+    
+    private func buildRequestURL(path: String) throws -> URL {
+        let base = resolveBaseURL()
+        guard let url = URL(string: base + path) else {
+            throw NSError(domain: "GeminiError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid endpoint URL"])
+        }
+        
+        if isUsingCustomBase {
+            return url
+        } else {
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+                throw NSError(domain: "GeminiError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid URL components"])
+            }
+            components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "key", value: apiKey)]
+            guard let finalURL = components.url else {
+                throw NSError(domain: "GeminiError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid final URL"])
+            }
+            return finalURL
+        }
+    }
+    
+    private func setAuthHeader(on request: inout URLRequest) {
+        if isUsingCustomBase {
+            request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        }
+    }
+    
     init(apiKey: String, preference: GeminiModelPreference = .default) {
         self.apiKey = apiKey
         self.modelPreference = preference
@@ -988,9 +1024,10 @@ final class GeminiDirectProvider: LLMProvider {
     }
     
     private func uploadSimple(data: Data, mimeType: String) async throws -> String {
-        let endpoint = fileUploadEndpoint()
-        var request = URLRequest(url: URL(string: endpoint + "?key=\(apiKey)")!)
+        let endpoint = try buildRequestURL(path: "/upload/v1beta/files")
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
+        setAuthHeader(on: &request)
         request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
         request.httpBody = data
 
@@ -1020,9 +1057,10 @@ final class GeminiDirectProvider: LLMProvider {
         body.append(try JSONEncoder().encode(metadata))
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         
-        let endpoint = fileUploadEndpoint()
-        var request = URLRequest(url: URL(string: endpoint + "?key=\(apiKey)")!)
+        let endpoint = try buildRequestURL(path: "/upload/v1beta/files")
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
+        setAuthHeader(on: &request)
         request.setValue("resumable", forHTTPHeaderField: "X-Goog-Upload-Protocol")
         request.setValue("start", forHTTPHeaderField: "X-Goog-Upload-Command")
         request.setValue("\(data.count)", forHTTPHeaderField: "X-Goog-Upload-Raw-Size")
@@ -1056,6 +1094,7 @@ final class GeminiDirectProvider: LLMProvider {
         
         var uploadRequest = URLRequest(url: URL(string: uploadURL)!)
         uploadRequest.httpMethod = "PUT"
+        setAuthHeader(on: &uploadRequest)
         uploadRequest.setValue("upload, finalize", forHTTPHeaderField: "X-Goog-Upload-Command")
         uploadRequest.setValue("0", forHTTPHeaderField: "X-Goog-Upload-Offset")
         uploadRequest.httpBody = data
@@ -1098,11 +1137,22 @@ final class GeminiDirectProvider: LLMProvider {
     }
     
     private func getFileStatus(fileURI: String) async throws -> String {
-        guard let url = URL(string: fileURI + "?key=\(apiKey)") else {
+        guard var components = URLComponents(string: fileURI) else {
             throw NSError(domain: "GeminiError", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid file URI"])
         }
         
-        let (data, response) = try await URLSession.shared.data(from: url)
+        if !isUsingCustomBase {
+            components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "key", value: apiKey)]
+        }
+        
+        guard let url = components.url else {
+            throw NSError(domain: "GeminiError", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid file status URL"])
+        }
+        
+        var request = URLRequest(url: url)
+        setAuthHeader(on: &request)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
 
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
            let state = json["state"] as? String {
@@ -1144,9 +1194,10 @@ final class GeminiDirectProvider: LLMProvider {
         ]
 
         // Single API call (no retry logic in this function)
-        let urlWithKey = endpointForModel(model) + "?key=\(apiKey)"
-        var request = URLRequest(url: URL(string: urlWithKey)!)
+        let endpoint = try buildRequestURL(path: "/v1beta/models/\(model.rawValue):generateContent")
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
+        setAuthHeader(on: &request)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120 // 2 minutes timeout
         let requestStart = Date()
@@ -1155,7 +1206,7 @@ final class GeminiDirectProvider: LLMProvider {
             request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
             // Log curl command
-            logCurlCommand(context: "transcribe.generateContent", url: urlWithKey, requestBody: requestBody)
+            logCurlCommand(context: "transcribe.generateContent", url: endpoint.absoluteString, requestBody: requestBody)
 
             // Log request timing
             logRequestTiming(context: "transcribe")
@@ -1458,9 +1509,10 @@ final class GeminiDirectProvider: LLMProvider {
         ]
 
         // Single API call (retry logic handled by outer loop in generateActivityCards)
-        let urlWithKey = endpointForModel(model) + "?key=\(apiKey)"
-        var request = URLRequest(url: URL(string: urlWithKey)!)
+        let endpoint = try buildRequestURL(path: "/v1beta/models/\(model.rawValue):generateContent")
+        var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
+        setAuthHeader(on: &request)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120 // 2 minutes timeout
         let requestStart = Date()
@@ -1469,7 +1521,7 @@ final class GeminiDirectProvider: LLMProvider {
             request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
 
             // Log curl command
-            logCurlCommand(context: "cards.generateContent", url: urlWithKey, requestBody: requestBody)
+            logCurlCommand(context: "cards.generateContent", url: endpoint.absoluteString, requestBody: requestBody)
 
             // Log request timing
             logRequestTiming(context: "cards")

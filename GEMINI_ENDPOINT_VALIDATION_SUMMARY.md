@@ -3,6 +3,36 @@
 ## Overview
 This document summarizes the implementation of custom Gemini endpoint validation and wiring for the Dayflow macOS app.
 
+## Critical Fix: Custom Base URL Authentication
+
+### Problem
+The initial implementation failed during video analysis batch processing when using custom base URLs. The issue was that custom proxy endpoints (like `api.metamirror.club`) require the API key in the `x-goog-api-key` HTTP header, not as a URL query parameter. The original code always used query parameters, causing authentication failures with custom proxies.
+
+### Solution
+Implemented a dual authentication strategy:
+- **Default Google Endpoint**: Uses `?key=` query parameter (backward compatible)
+- **Custom Base URLs**: Uses `x-goog-api-key` HTTP header (required by most proxies)
+
+### Implementation Details
+1. Added `isUsingCustomBase` property to detect when a custom base URL is active
+2. Created `buildRequestURL(path:)` helper that:
+   - For default endpoint: Adds `?key=` query parameter
+   - For custom endpoint: Returns URL without query parameter
+3. Created `setAuthHeader(on:)` helper that:
+   - For custom endpoint: Sets `x-goog-api-key` header
+   - For default endpoint: Does nothing (key already in query)
+4. Updated all request-building code paths to use these helpers:
+   - `uploadSimple()`
+   - `uploadResumable()` (both init and finalize requests)
+   - `getFileStatus()`
+   - `geminiTranscribeRequest()`
+   - `geminiCardsRequest()`
+   - `GeminiAPIHelper.testConnection()`
+
+### Test Coverage
+- Updated `GeminiEndpointIntegrationTests.testTestConnectionUsesCustomHost()` to verify header-based auth
+- Tests confirm that custom hosts receive the API key via header, not query parameter
+
 ## Changes Made
 
 ### 1. GeminiEndpointResolver (`Dayflow/Dayflow/Utilities/GeminiEndpointResolver.swift`)

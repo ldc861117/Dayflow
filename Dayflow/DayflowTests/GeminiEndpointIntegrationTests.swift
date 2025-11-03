@@ -115,6 +115,7 @@ final class GeminiEndpointIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(request.url?.host, "custom-api.example.com")
         XCTAssertTrue(request.url?.absoluteString.contains("/v1beta/models/gemini-2.5-flash-lite:generateContent") ?? false)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "x-goog-api-key"), "fake-key")
     }
     
     func testToggleOffResetsCustomBase() {
