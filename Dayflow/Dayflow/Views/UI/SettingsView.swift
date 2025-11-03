@@ -54,6 +54,34 @@ struct SettingsView: View {
     @State private var geminiTitlePromptText = GeminiPromptDefaults.titleBlock
     @State private var geminiSummaryPromptText = GeminiPromptDefaults.summaryBlock
     @State private var geminiDetailedPromptText = GeminiPromptDefaults.detailedSummaryBlock
+    
+    // Gemini custom base URL
+    @State private var useCustomGeminiBaseURL = false
+    @State private var customGeminiBaseURL = ""
+    @State private var customGeminiBaseURLValidationError: String? = nil
+    @State private var normalizedCustomGeminiBaseURL: String? = nil
+    @State private var geminiBaseTestStatus: GeminiBaseTestStatus? = nil
+    @State private var isTestingGeminiBaseURL = false
+    @State private var isApplyingGeminiEndpointState = false
+
+    private enum GeminiBaseTestStatus {
+        case success(String)
+        case failure(String)
+
+        var isSuccess: Bool {
+            switch self {
+            case .success: return true
+            case .failure: return false
+            }
+        }
+
+        var message: String {
+            switch self {
+            case .success(let text): return text
+            case .failure(let text): return text
+            }
+        }
+    }
 
     // Ollama prompt customization
     @State private var ollamaPromptOverridesLoaded = false
@@ -117,6 +145,7 @@ struct SettingsView: View {
             refreshStorageIfNeeded()
             // Refresh cached local settings for provider test view
             reloadLocalProviderSettings()
+            loadGeminiEndpointSettings()
             loadGeminiPromptOverridesIfNeeded()
             loadOllamaPromptOverridesIfNeeded()
             let recordingsLimit = StoragePreferences.recordingsLimitBytes
@@ -133,6 +162,7 @@ struct SettingsView: View {
         .onChange(of: currentProvider) { newProvider in
             reloadLocalProviderSettings()
             if newProvider == "gemini" {
+                loadGeminiEndpointSettings()
                 loadGeminiPromptOverridesIfNeeded(force: true)
             } else if newProvider == "ollama" {
                 loadOllamaPromptOverridesIfNeeded(force: true)
@@ -189,6 +219,22 @@ struct SettingsView: View {
         .onChange(of: useCustomOllamaSummaryPrompt) { _ in persistOllamaPromptOverridesIfReady() }
         .onChange(of: ollamaTitlePromptText) { _ in persistOllamaPromptOverridesIfReady() }
         .onChange(of: ollamaSummaryPromptText) { _ in persistOllamaPromptOverridesIfReady() }
+        .onChange(of: useCustomGeminiBaseURL) { newValue in
+            guard !isApplyingGeminiEndpointState else { return }
+            if !newValue {
+                customGeminiBaseURL = ""
+                customGeminiBaseURLValidationError = nil
+                normalizedCustomGeminiBaseURL = nil
+                geminiBaseTestStatus = nil
+                persistGeminiEndpointSettings()
+            } else if !customGeminiBaseURL.isEmpty {
+                validateAndSaveGeminiBaseURL(customGeminiBaseURL)
+            }
+        }
+        .onChange(of: customGeminiBaseURL) { newValue in
+            guard !isApplyingGeminiEndpointState else { return }
+            validateAndSaveGeminiBaseURL(newValue)
+        }
     }
 
     private var sidebar: some View {
@@ -519,6 +565,10 @@ struct SettingsView: View {
                         persistGeminiModelSelection(model, source: "settings")
                     }
                 }
+                
+                SettingsCard(title: "Custom Gemini endpoint", subtitle: "Use a custom base URL for Gemini API calls") {
+                    geminiCustomEndpointView
+                }
 
                 SettingsCard(title: "Gemini prompt customization", subtitle: "Override Dayflow's defaults to tailor card generation") {
                     geminiPromptCustomizationView
@@ -543,6 +593,105 @@ struct SettingsView: View {
         }
     }
 
+    private var geminiCustomEndpointView: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Toggle(isOn: $useCustomGeminiBaseURL) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Use custom Gemini base URL")
+                        .font(.custom("Nunito", size: 14))
+                        .fontWeight(.semibold)
+                        .foregroundColor(.black.opacity(0.75))
+                    Text("Point all Gemini requests to a custom endpoint (e.g., a proxy or self-hosted API)")
+                        .font(.custom("Nunito", size: 12))
+                        .foregroundColor(.black.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(SwitchToggleStyle(tint: Color(red: 0.25, green: 0.17, blue: 0)))
+            
+            if useCustomGeminiBaseURL {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Custom base URL")
+                        .font(.custom("Nunito", size: 13))
+                        .fontWeight(.semibold)
+                        .foregroundColor(.black.opacity(0.7))
+                    
+                    TextField("https://your-proxy.example.com", text: $customGeminiBaseURL)
+                        .textFieldStyle(PlainTextFieldStyle())
+                        .font(.custom("Nunito", size: 13))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color.white)
+                        .cornerRadius(6)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(customGeminiBaseURLValidationError != nil ? Color(hex: "E91515") : Color.black.opacity(0.15), lineWidth: 1)
+                        )
+                    
+                    if let error = customGeminiBaseURLValidationError {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(hex: "E91515"))
+                            Text(error)
+                                .font(.custom("Nunito", size: 12))
+                                .foregroundColor(Color(hex: "E91515"))
+                        }
+                    } else if let normalized = normalizedCustomGeminiBaseURL {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(red: 0.35, green: 0.7, blue: 0.32))
+                            Text("Normalized: \(normalized)")
+                                .font(.custom("Nunito", size: 12))
+                                .foregroundColor(.black.opacity(0.6))
+                        }
+                    }
+                    
+                    HStack(spacing: 12) {
+                        DayflowSurfaceButton(
+                            action: testGeminiBaseURL,
+                            content: {
+                                HStack(spacing: 8) {
+                                    if isTestingGeminiBaseURL {
+                                        ProgressView().scaleEffect(0.7).frame(width: 14, height: 14)
+                                    } else {
+                                        Image(systemName: geminiBaseTestStatus == nil ? "bolt.fill" : (geminiBaseTestStatus?.isSuccess == true ? "checkmark.circle.fill" : "xmark.circle.fill"))
+                                            .font(.system(size: 13))
+                                    }
+                                    Text(isTestingGeminiBaseURL ? "Testing..." : "Test base URL")
+                                        .font(.custom("Nunito", size: 13))
+                                        .fontWeight(.semibold)
+                                }
+                                .frame(minWidth: 140)
+                            },
+                            background: geminiBaseTestStatus?.isSuccess == true ? Color(red: 0.34, green: 1, blue: 0.45).opacity(0.2) : Color(red: 0.25, green: 0.17, blue: 0),
+                            foreground: geminiBaseTestStatus?.isSuccess == true ? .black : .white,
+                            borderColor: geminiBaseTestStatus?.isSuccess == true ? Color(red: 0.34, green: 1, blue: 0.45).opacity(0.5) : .clear,
+                            cornerRadius: 8,
+                            horizontalPadding: 18,
+                            verticalPadding: 10,
+                            showOverlayStroke: geminiBaseTestStatus?.isSuccess == true
+                        )
+                        .disabled(isTestingGeminiBaseURL || customGeminiBaseURLValidationError != nil || customGeminiBaseURL.isEmpty)
+                        
+                        if let status = geminiBaseTestStatus {
+                            HStack(spacing: 6) {
+                                Image(systemName: status.isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(status.isSuccess ? Color(red: 0.34, green: 1, blue: 0.45) : Color(hex: "E91515"))
+                                Text(status.message)
+                                    .font(.custom("Nunito", size: 12))
+                                    .foregroundColor(status.isSuccess ? .black.opacity(0.7) : Color(hex: "E91515"))
+                            }
+                        }
+                    }
+                }
+                .padding(.leading, 8)
+            }
+        }
+    }
+    
     private var geminiPromptCustomizationView: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Overrides apply only when their toggle is on. Unchecked sections fall back to Dayflow's defaults.")
@@ -1047,6 +1196,90 @@ struct SettingsView: View {
         localModelId = UserDefaults.standard.string(forKey: "llmLocalModelId") ?? localModelId
         let raw = UserDefaults.standard.string(forKey: "llmLocalEngine") ?? localEngine.rawValue
         localEngine = LocalEngine(rawValue: raw) ?? localEngine
+    }
+    
+    private func loadGeminiEndpointSettings() {
+        guard !isApplyingGeminiEndpointState else { return }
+        isApplyingGeminiEndpointState = true
+        
+        let resolver = GeminiEndpointResolver.load()
+        useCustomGeminiBaseURL = resolver.useCustomBase
+        customGeminiBaseURL = resolver.customBase ?? ""
+        
+        if !customGeminiBaseURL.isEmpty {
+            validateAndSaveGeminiBaseURL(customGeminiBaseURL, skipSave: true)
+        }
+        
+        isApplyingGeminiEndpointState = false
+    }
+    
+    private func validateAndSaveGeminiBaseURL(_ value: String, skipSave: Bool = false) {
+        guard !isApplyingGeminiEndpointState else { return }
+        
+        geminiBaseTestStatus = nil
+        
+        if value.isEmpty {
+            customGeminiBaseURLValidationError = nil
+            normalizedCustomGeminiBaseURL = nil
+            if !skipSave {
+                persistGeminiEndpointSettings()
+            }
+            return
+        }
+        
+        do {
+            let normalized = try GeminiEndpointResolver.normalizeAndValidate(value)
+            customGeminiBaseURLValidationError = nil
+            normalizedCustomGeminiBaseURL = normalized
+            
+            if !skipSave {
+                persistGeminiEndpointSettings()
+            }
+        } catch {
+            customGeminiBaseURLValidationError = error.localizedDescription
+            normalizedCustomGeminiBaseURL = nil
+        }
+    }
+    
+    private func persistGeminiEndpointSettings() {
+        var resolver = GeminiEndpointResolver(
+            useCustomBase: useCustomGeminiBaseURL,
+            customBase: customGeminiBaseURL.isEmpty ? nil : customGeminiBaseURL
+        )
+        resolver.save()
+    }
+    
+    private func testGeminiBaseURL() {
+        guard !isTestingGeminiBaseURL else { return }
+        guard !customGeminiBaseURL.isEmpty else { return }
+        guard customGeminiBaseURLValidationError == nil else { return }
+        
+        guard let apiKey = KeychainManager.shared.retrieve(for: "gemini") else {
+            geminiBaseTestStatus = .failure("No API key found")
+            return
+        }
+        
+        isTestingGeminiBaseURL = true
+        geminiBaseTestStatus = nil
+        
+        Task {
+            do {
+                let _ = try await GeminiAPIHelper.shared.testConnection(apiKey: apiKey)
+                await MainActor.run {
+                    if let normalized = normalizedCustomGeminiBaseURL {
+                        geminiBaseTestStatus = .success("Success! Using \(normalized)")
+                    } else {
+                        geminiBaseTestStatus = .success("Connection successful!")
+                    }
+                    isTestingGeminiBaseURL = false
+                }
+            } catch {
+                await MainActor.run {
+                    geminiBaseTestStatus = .failure(error.localizedDescription)
+                    isTestingGeminiBaseURL = false
+                }
+            }
+        }
     }
 
     private func loadCurrentProvider() {

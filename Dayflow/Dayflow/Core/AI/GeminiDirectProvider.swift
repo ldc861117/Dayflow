@@ -7,7 +7,6 @@ import Foundation
 
 final class GeminiDirectProvider: LLMProvider {
     private let apiKey: String
-    private let fileEndpoint = "https://generativelanguage.googleapis.com/upload/v1beta/files"
     private let modelPreference: GeminiModelPreference
 
     private static let capacityErrorCodes: Set<Int> = [403, 429, 503]
@@ -33,7 +32,13 @@ final class GeminiDirectProvider: LLMProvider {
     }
 
     private func endpointForModel(_ model: GeminiModel) -> String {
-        return "https://generativelanguage.googleapis.com/v1beta/models/\(model.rawValue):generateContent"
+        let resolver = GeminiEndpointResolver.load()
+        return resolver.modelEndpoint(for: model.rawValue)
+    }
+    
+    private func fileUploadEndpoint() -> String {
+        let resolver = GeminiEndpointResolver.load()
+        return resolver.fileUploadEndpoint()
     }
     
     init(apiKey: String, preference: GeminiModelPreference = .default) {
@@ -983,7 +988,8 @@ final class GeminiDirectProvider: LLMProvider {
     }
     
     private func uploadSimple(data: Data, mimeType: String) async throws -> String {
-        var request = URLRequest(url: URL(string: fileEndpoint + "?key=\(apiKey)")!)
+        let endpoint = fileUploadEndpoint()
+        var request = URLRequest(url: URL(string: endpoint + "?key=\(apiKey)")!)
         request.httpMethod = "POST"
         request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
         request.httpBody = data
@@ -1000,7 +1006,7 @@ final class GeminiDirectProvider: LLMProvider {
         throw NSError(domain: "GeminiError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to parse upload response"])
     }
     
-private func uploadResumable(data: Data, mimeType: String) async throws -> String {
+    private func uploadResumable(data: Data, mimeType: String) async throws -> String {
         print("📤 Starting resumable video upload:")
         print("   Size: \(data.count / 1024 / 1024) MB")
         print("   MIME Type: \(mimeType)")
@@ -1014,7 +1020,8 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         body.append(try JSONEncoder().encode(metadata))
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
         
-        var request = URLRequest(url: URL(string: fileEndpoint + "?key=\(apiKey)")!)
+        let endpoint = fileUploadEndpoint()
+        var request = URLRequest(url: URL(string: endpoint + "?key=\(apiKey)")!)
         request.httpMethod = "POST"
         request.setValue("resumable", forHTTPHeaderField: "X-Goog-Upload-Protocol")
         request.setValue("start", forHTTPHeaderField: "X-Goog-Upload-Command")
