@@ -1962,37 +1962,6 @@ private func uploadResumable(data: Data, mimeType: String) async throws -> Strin
         return formatter.string(from: date)
     }
     
-    private func parseVideoTimestamp(_ timestamp: String) -> Int {
-        let components = timestamp.components(separatedBy: ":")
-        
-        if components.count == 2 {
-            // MM:SS format
-            let minutes = Int(components[0]) ?? 0
-            let seconds = Int(components[1]) ?? 0
-            return minutes * 60 + seconds
-        } else if components.count == 3 {
-            // HH:MM:SS format
-            let hours = Int(components[0]) ?? 0
-            let minutes = Int(components[1]) ?? 0
-            let seconds = Int(components[2]) ?? 0
-            return hours * 3600 + minutes * 60 + seconds
-        } else {
-            // Invalid format, return 0
-            print("Warning: Invalid video timestamp format: \(timestamp)")
-            return 0
-        }
-    }
-    
-    // Helper function to format timestamps
-    private func formatTimestampForPrompt(_ unixTime: Int) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(unixTime))
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
-        return formatter.string(from: date)
-    }
-    
     
     private struct GeminiFileMetadata: Codable {
         let file: GeminiFileInfo

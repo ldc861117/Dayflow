@@ -581,16 +581,9 @@ private func createBatches(from chunks: [RecordingChunk]) -> [AnalysisBatch] {
     }
 
 
-    // Parses a video timestamp like "05:30" into seconds
+    // Parses a video timestamp like "05:30" or "01:30:45" into seconds
     private func parseVideoTimestamp(_ timestamp: String) -> TimeInterval? {
-        let components = timestamp.components(separatedBy: ":")
-        guard components.count == 2,
-              let minutes = Int(components[0]),
-              let seconds = Int(components[1]) else {
-            return nil
-        }
-        
-        return TimeInterval(minutes * 60 + seconds)
+        return VideoTimestampParser.parseTimestampAsTimeInterval(timestamp)
     }
 
     // Formats a Date as a clock time like "11:37 AM"
