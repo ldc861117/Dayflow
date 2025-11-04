@@ -11,13 +11,25 @@ class GeminiAPIHelper {
     static let shared = GeminiAPIHelper()
     private init() {}
     
-    private let baseURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
+    private func getBaseURL() -> String {
+        let resolver = GeminiEndpointResolver.load()
+        return resolver.modelEndpoint(for: "gemini-2.5-flash-lite")
+    }
     
     enum APIError: Error, LocalizedError {
         case invalidAPIKey
         case networkError(String)
         case invalidResponse
-        
+        case invalidResponseData(data: Data, response: HTTPURLResponse)
+        case invalidURL(description: String)
+        case uploadFailed(reason: String)
+        case processingFailed(reason: String)
+        case parsingFailed(description: String)
+        case validationFailed(reason: String)
+        case transcriptionFailed(reason: String)
+        case cardGenerationFailed(reason: String)
+        case httpError(statusCode: Int, message: String)
+    
         var errorDescription: String? {
             switch self {
             case .invalidAPIKey:
@@ -26,6 +38,25 @@ class GeminiAPIHelper {
                 return "Network error: \(message)"
             case .invalidResponse:
                 return "Invalid response from server"
+            case .invalidResponseData(let data, let response):
+                let body = String(data: data, encoding: .utf8) ?? "Unable to decode body"
+                return "Invalid response from backend. Status: \(response.statusCode), Body: \(body)"
+            case .invalidURL(let description):
+                return "Invalid URL: \(description)"
+            case .uploadFailed(let reason):
+                return "Upload failed: \(reason)"
+            case .processingFailed(let reason):
+                return "Processing failed: \(reason)"
+            case .parsingFailed(let description):
+                return "Parsing failed: \(description)"
+            case .validationFailed(let reason):
+                return "Validation failed: \(reason)"
+            case .transcriptionFailed(let reason):
+                return "Transcription failed: \(reason)"
+            case .cardGenerationFailed(let reason):
+                return "Card generation failed: \(reason)"
+            case .httpError(let statusCode, let message):
+                return "HTTP Error \(statusCode): \(message)"
             }
         }
     }
@@ -36,9 +67,21 @@ class GeminiAPIHelper {
             throw APIError.invalidAPIKey
         }
         
-        let url = URL(string: "\(baseURL)?key=\(apiKey)")!
+        let resolver = GeminiEndpointResolver.load()
+        let baseURL = getBaseURL()
+        
+        var url: URL
+        if resolver.useCustomBase && resolver.customBase != nil {
+            url = URL(string: baseURL)!
+        } else {
+            url = URL(string: "\(baseURL)?key=\(apiKey)")!
+        }
+        
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        if resolver.useCustomBase && resolver.customBase != nil {
+            request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
         // Simple test request
