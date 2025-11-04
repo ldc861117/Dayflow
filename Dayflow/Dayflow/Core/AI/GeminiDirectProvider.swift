@@ -54,18 +54,18 @@ final class GeminiDirectProvider: LLMProvider {
     private func buildRequestURL(path: String) throws -> URL {
         let base = resolveBaseURL()
         guard let url = URL(string: base + path) else {
-            throw NSError(domain: "GeminiError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid endpoint URL"])
+            throw GeminiAPIHelper.APIError.invalidURL(description: "Invalid endpoint URL: \(base + path)")
         }
         
         if isUsingCustomBase {
             return url
         } else {
             guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-                throw NSError(domain: "GeminiError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid URL components"])
+                throw GeminiAPIHelper.APIError.invalidURL(description: "Invalid URL components for: \(url)")
             }
             components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "key", value: apiKey)]
             guard let finalURL = components.url else {
-                throw NSError(domain: "GeminiError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Invalid final URL"])
+                throw GeminiAPIHelper.APIError.invalidURL(description: "Could not construct final URL from components for: \(url)")
             }
             return finalURL
         }
@@ -494,16 +494,12 @@ final class GeminiDirectProvider: LLMProvider {
 
                 // If we had validation errors, throw to trigger retry
                 if hasValidationErrors {
-                    throw NSError(domain: "GeminiProvider", code: 100, userInfo: [
-                        NSLocalizedDescriptionKey: "Gemini generated observations with timestamps exceeding video duration. Video is \(durationString) long but observations extended beyond this."
-                    ])
+                    throw GeminiAPIHelper.APIError.validationFailed(reason: "Gemini generated observations with timestamps exceeding video duration. Video is \(durationString) long but observations extended beyond this.")
                 }
 
                 // Ensure we have at least one observation
                 if observations.isEmpty {
-                    throw NSError(domain: "GeminiProvider", code: 101, userInfo: [
-                        NSLocalizedDescriptionKey: "No valid observations generated after filtering out invalid timestamps"
-                    ])
+                    throw GeminiAPIHelper.APIError.validationFailed(reason: "No valid observations generated after filtering out invalid timestamps")
                 }
 
                 // SUCCESS! All validations passed
@@ -528,7 +524,7 @@ final class GeminiDirectProvider: LLMProvider {
                     print("↘️ Downgrading to \(transition.to.rawValue) after \(nsError.code)")
 
                     Task { @MainActor in
-                        await AnalyticsService.shared.capture("llm_model_fallback", [
+                        AnalyticsService.shared.capture("llm_model_fallback", [
                             "provider": "gemini",
                             "operation": "transcribe",
                             "from_model": transition.from.rawValue,
@@ -563,9 +559,7 @@ final class GeminiDirectProvider: LLMProvider {
 
         // Check if we succeeded
         guard !finalObservations.isEmpty else {
-            throw lastError ?? NSError(domain: "GeminiProvider", code: 102, userInfo: [
-                NSLocalizedDescriptionKey: "Video transcription failed after \(maxRetries) attempts"
-            ])
+            throw lastError ?? GeminiAPIHelper.APIError.transcriptionFailed(reason: "Video transcription failed after \(maxRetries) attempts")
         }
         
         let log = LLMCall(
@@ -861,7 +855,7 @@ final class GeminiDirectProvider: LLMProvider {
                     print("↘️ Downgrading to \(transition.to.rawValue) after \(nsError.code)")
 
                     Task { @MainActor in
-                        await AnalyticsService.shared.capture("llm_model_fallback", [
+                        AnalyticsService.shared.capture("llm_model_fallback", [
                             "provider": "gemini",
                             "operation": "generate_activity_cards",
                             "from_model": transition.from.rawValue,
@@ -902,9 +896,7 @@ final class GeminiDirectProvider: LLMProvider {
         // If we get here and finalCards is empty, all retries were exhausted
         if finalCards.isEmpty {
             print("❌ All \(maxRetries) attempts failed")
-            throw lastError ?? NSError(domain: "GeminiError", code: 999, userInfo: [
-                NSLocalizedDescriptionKey: "Activity card generation failed after \(maxRetries) attempts"
-            ])
+            throw lastError ?? GeminiAPIHelper.APIError.cardGenerationFailed(reason: "Activity card generation failed after \(maxRetries) attempts")
         }
 
         let log = LLMCall(
@@ -961,7 +953,7 @@ final class GeminiDirectProvider: LLMProvider {
             // If upload failed completely, try next cycle
             guard let fileURI = uploadedFileURI else {
                 if cycle == maxCycles {
-                    throw lastError ?? NSError(domain: "GeminiError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to upload file after \(maxCycles) cycles"])
+                    throw lastError ?? GeminiAPIHelper.APIError.uploadFailed(reason: "Failed to upload file after \(maxCycles) cycles")
                 }
                 print("🔄 Upload failed in cycle \(cycle), trying next cycle")
                 continue
@@ -987,7 +979,7 @@ final class GeminiDirectProvider: LLMProvider {
 
             // Processing timeout occurred
             print("⏰ File processing timeout (3 minutes) in cycle \(cycle)")
-            lastError = NSError(domain: "GeminiError", code: 2, userInfo: [NSLocalizedDescriptionKey: "File processing timeout"])
+            lastError = GeminiAPIHelper.APIError.networkError("File processing timeout after 3 minutes")
 
             if cycle < maxCycles {
                 print("🔄 Starting next upload+processing cycle...")
@@ -995,7 +987,7 @@ final class GeminiDirectProvider: LLMProvider {
         }
 
         // All cycles failed
-        throw lastError ?? NSError(domain: "GeminiError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Upload and processing failed after \(maxCycles) complete cycles"])
+        throw lastError ?? GeminiAPIHelper.APIError.networkError("Upload and processing failed after \(maxCycles) complete cycles")
     }
 
     private func shouldRetryUpload(error: Error) -> Bool {
@@ -1040,7 +1032,7 @@ final class GeminiDirectProvider: LLMProvider {
         }
         // Log unexpected response to help debugging
         logGeminiFailure(context: "uploadSimple", response: response, data: responseData, error: nil)
-        throw NSError(domain: "GeminiError", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to parse upload response"])
+        throw GeminiAPIHelper.APIError.parsingFailed(description: "Failed to parse upload response")
     }
     
     private func uploadResumable(data: Data, mimeType: String) async throws -> String {
@@ -1074,7 +1066,7 @@ final class GeminiDirectProvider: LLMProvider {
 
         guard let httpResponse = response as? HTTPURLResponse else {
             print("🔴 Upload init failed: Non-HTTP response")
-            throw NSError(domain: "GeminiError", code: 4, userInfo: [NSLocalizedDescriptionKey: "Non-HTTP response during upload init"])
+            throw GeminiAPIHelper.APIError.uploadFailed(reason: "Non-HTTP response during upload init")
         }
         
         print("📡 Upload session initialized:")
@@ -1087,7 +1079,7 @@ final class GeminiDirectProvider: LLMProvider {
                 print("   Response Body: \(truncate(bodyText, max: 1000))")
             }
             logGeminiFailure(context: "uploadResumable(start)", response: response, data: responseData, error: nil)
-            throw NSError(domain: "GeminiError", code: 4, userInfo:  [NSLocalizedDescriptionKey: "No upload URL in response"])
+            throw GeminiAPIHelper.APIError.invalidResponseData(data: responseData, response: httpResponse)
         }
         
         print("   Upload URL: \(uploadURL.prefix(80))...")
@@ -1105,7 +1097,7 @@ final class GeminiDirectProvider: LLMProvider {
 
         guard let httpUploadResponse = uploadResponse as? HTTPURLResponse else {
             print("🔴 Upload finalize failed: Non-HTTP response")
-            throw NSError(domain: "GeminiError", code: 5, userInfo: [NSLocalizedDescriptionKey: "Non-HTTP response during upload finalize"])
+            throw GeminiAPIHelper.APIError.uploadFailed(reason: "Non-HTTP response during upload finalize")
         }
         
         print("📥 Upload completed:")
@@ -1133,12 +1125,12 @@ final class GeminiDirectProvider: LLMProvider {
             print("   Response Body: \(truncate(bodyText, max: 1000))")
         }
         logGeminiFailure(context: "uploadResumable(finalize)", response: uploadResponse, data: uploadResponseData, error: nil)
-        throw NSError(domain: "GeminiError", code: 5, userInfo: [NSLocalizedDescriptionKey: "Failed to parse upload response"])
+        throw GeminiAPIHelper.APIError.parsingFailed(description: "Failed to parse upload response")
     }
     
     private func getFileStatus(fileURI: String) async throws -> String {
         guard var components = URLComponents(string: fileURI) else {
-            throw NSError(domain: "GeminiError", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid file URI"])
+            throw GeminiAPIHelper.APIError.invalidURL(description: "Invalid file URI for getFileStatus: \(fileURI)")
         }
         
         if !isUsingCustomBase {
@@ -1146,7 +1138,7 @@ final class GeminiDirectProvider: LLMProvider {
         }
         
         guard let url = components.url else {
-            throw NSError(domain: "GeminiError", code: 6, userInfo: [NSLocalizedDescriptionKey: "Invalid file status URL"])
+            throw GeminiAPIHelper.APIError.invalidURL(description: "Could not construct final URL for getFileStatus from: \(fileURI)")
         }
         
         var request = URLRequest(url: url)
@@ -1216,7 +1208,7 @@ final class GeminiDirectProvider: LLMProvider {
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 print("🔴 Non-HTTP response received")
-                throw NSError(domain: "GeminiError", code: 9, userInfo: [NSLocalizedDescriptionKey: "Non-HTTP response"])
+                throw GeminiAPIHelper.APIError.invalidResponse
             }
 
             print("📥 Response received:")
@@ -1302,7 +1294,7 @@ final class GeminiDirectProvider: LLMProvider {
                     errorMessage: errorMessage
                 )
                 logGeminiFailure(context: "transcribe.httpError", attempt: attempt, response: response, data: data, error: nil)
-                throw NSError(domain: "GeminiError", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+                throw GeminiAPIHelper.APIError.httpError(statusCode: httpResponse.statusCode, message: errorMessage)
             }
 
             // HTTP status is good (200-299), now validate content
@@ -1316,7 +1308,7 @@ final class GeminiDirectProvider: LLMProvider {
                     errorMessage: "Invalid JSON response"
                 )
                 logGeminiFailure(context: "transcribe.generateContent.invalidJSON", attempt: attempt, response: response, data: data, error: nil)
-                throw NSError(domain: "GeminiError", code: 7, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON response"])
+                throw GeminiAPIHelper.APIError.parsingFailed(description: "Invalid JSON response")
             }
 
             guard let candidates = json["candidates"] as? [[String: Any]],
@@ -1330,7 +1322,7 @@ final class GeminiDirectProvider: LLMProvider {
                     errorMessage: "No candidates in response"
                 )
                 logGeminiFailure(context: "transcribe.generateContent.noCandidates", attempt: attempt, response: response, data: data, error: nil)
-                throw NSError(domain: "GeminiError", code: 7, userInfo: [NSLocalizedDescriptionKey: "No candidates in response"])
+                throw GeminiAPIHelper.APIError.parsingFailed(description: "No candidates in response")
             }
 
             guard let content = firstCandidate["content"] as? [String: Any] else {
@@ -1343,7 +1335,7 @@ final class GeminiDirectProvider: LLMProvider {
                     errorMessage: "No content in candidate"
                 )
                 logGeminiFailure(context: "transcribe.generateContent.noContent", attempt: attempt, response: response, data: data, error: nil)
-                throw NSError(domain: "GeminiError", code: 7, userInfo: [NSLocalizedDescriptionKey: "No content in candidate"])
+                throw GeminiAPIHelper.APIError.parsingFailed(description: "No content in candidate")
             }
 
             guard let parts = content["parts"] as? [[String: Any]],
@@ -1358,7 +1350,7 @@ final class GeminiDirectProvider: LLMProvider {
                     errorMessage: "Empty content - no parts array"
                 )
                 logGeminiFailure(context: "transcribe.generateContent.emptyContent", attempt: attempt, response: response, data: data, error: nil)
-                throw NSError(domain: "GeminiError", code: 7, userInfo: [NSLocalizedDescriptionKey: "Empty content - no parts array"])
+                throw GeminiAPIHelper.APIError.parsingFailed(description: "Empty content - no parts array")
             }
 
             // Everything succeeded - log success and return
@@ -1455,7 +1447,7 @@ final class GeminiDirectProvider: LLMProvider {
     private func parseTranscripts(_ response: String) throws -> [VideoTranscriptChunk] {
         guard let data = response.data(using: .utf8) else {
             print("🔎 GEMINI DEBUG: parseTranscripts received non-UTF8 or empty response: \(truncate(response, max: 400))")
-            throw NSError(domain: "GeminiError", code: 8, userInfo: [NSLocalizedDescriptionKey: "Invalid response encoding"])
+            throw GeminiAPIHelper.APIError.parsingFailed(description: "Invalid response encoding")
         }
         do {
             let transcripts = try JSONDecoder().decode([VideoTranscriptChunk].self, from: data)
@@ -1463,7 +1455,7 @@ final class GeminiDirectProvider: LLMProvider {
         } catch {
             let snippet = truncate(String(data: data, encoding: .utf8) ?? "<non-utf8>", max: 1200)
             print("🔎 GEMINI DEBUG: parseTranscripts JSON decode failed: \(error.localizedDescription) bodySnippet=\(snippet)")
-            throw error
+            throw GeminiAPIHelper.APIError.parsingFailed(description: "JSON decode failed: \(error.localizedDescription)")
         }
     }
     
@@ -1531,7 +1523,7 @@ final class GeminiDirectProvider: LLMProvider {
 
             guard let httpResponse = response as? HTTPURLResponse else {
                 print("🔴 Non-HTTP response received for cards request")
-                throw NSError(domain: "GeminiError", code: 9, userInfo: [NSLocalizedDescriptionKey: "Non-HTTP response"])
+                throw GeminiAPIHelper.APIError.invalidResponse
             }
 
             print("📥 Cards response received:")
@@ -1601,7 +1593,7 @@ final class GeminiDirectProvider: LLMProvider {
                     errorMessage: errorMessage
                 )
                 logGeminiFailure(context: "cards.httpError", attempt: attempt, response: response, data: data, error: nil)
-                throw NSError(domain: "GeminiError", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+                throw GeminiAPIHelper.APIError.httpError(statusCode: httpResponse.statusCode, message: errorMessage)
             }
 
             // HTTP status is good (200-299), now validate content
@@ -1618,7 +1610,7 @@ final class GeminiDirectProvider: LLMProvider {
                     errorMessage: "Invalid response format - missing candidates or content"
                 )
                 logGeminiFailure(context: "cards.generateContent.invalidFormat", attempt: attempt, response: response, data: data, error: nil)
-                throw NSError(domain: "GeminiError", code: 9, userInfo: [NSLocalizedDescriptionKey: "Invalid response format - missing candidates or content"])
+                throw GeminiAPIHelper.APIError.parsingFailed(description: "Invalid response format - missing candidates or content")
             }
 
             // Check for parts array - if missing, this is likely a schema validation failure
@@ -1634,7 +1626,7 @@ final class GeminiDirectProvider: LLMProvider {
                     errorMessage: "Schema validation likely failed - no content parts in response"
                 )
                 logGeminiFailure(context: "cards.generateContent.emptyContent", attempt: attempt, response: response, data: data, error: nil)
-                throw NSError(domain: "GeminiError", code: 9, userInfo: [NSLocalizedDescriptionKey: "Schema validation likely failed - no content parts in response"])
+                throw GeminiAPIHelper.APIError.parsingFailed(description: "Schema validation likely failed - no content parts in response")
             }
 
             // Everything succeeded - log success and return
@@ -1724,7 +1716,7 @@ final class GeminiDirectProvider: LLMProvider {
     private func parseActivityCards(_ response: String) throws -> [ActivityCardData] {
         guard let data = response.data(using: .utf8) else {
             print("🔎 GEMINI DEBUG: parseActivityCards received non-UTF8 or empty response: \(truncate(response, max: 400))")
-            throw NSError(domain: "GeminiError", code: 10, userInfo: [NSLocalizedDescriptionKey: "Invalid response encoding"])
+            throw GeminiAPIHelper.APIError.parsingFailed(description: "Invalid response encoding")
         }
         
         // Need to map the response format to our ActivityCard format
