@@ -11,6 +11,7 @@ final class GeminiDirectProvider: LLMProvider {
 
     private static let capacityErrorCodes: Set<Int> = [403, 429, 503]
 
+
     private struct ModelRunState {
         private let models: [GeminiModel]
         private(set) var index: Int = 0
@@ -52,9 +53,17 @@ final class GeminiDirectProvider: LLMProvider {
     }
     
     private func buildRequestURL(path: String) throws -> URL {
-        let base = resolveBaseURL()
-        guard let url = URL(string: base + path) else {
-            throw GeminiAPIHelper.APIError.invalidURL(description: "Invalid endpoint URL: \(base + path)")
+        var base = resolveBaseURL()
+        // Ensure base URL doesn't have a trailing slash
+        if base.hasSuffix("/") {
+            base = String(base.dropLast())
+        }
+        
+        // Ensure path has a leading slash
+        let finalPath = path.hasPrefix("/") ? path : "/" + path
+        
+        guard let url = URL(string: base + finalPath) else {
+            throw GeminiAPIHelper.APIError.invalidURL(description: "Invalid endpoint URL: \(base + finalPath)")
         }
         
         if isUsingCustomBase {
@@ -310,8 +319,6 @@ final class GeminiDirectProvider: LLMProvider {
         try videoData.write(to: tempURL)
         defer { try? FileManager.default.removeItem(at: tempURL) }
         
-        let fileURI = try await uploadAndAwait(tempURL, mimeType: mimeType, key: apiKey).1
-        
         // Format duration for display
         let durationMinutes = Int(videoDuration / 60)
         let durationSeconds = Int(videoDuration.truncatingRemainder(dividingBy: 60))
@@ -319,13 +326,9 @@ final class GeminiDirectProvider: LLMProvider {
         
         let finalTranscriptionPrompt = """
         # Video Transcription Prompt
-
         Your job is to transcribe someone's computer usage into a small number of meaningful activity segments.
-
         ## CRITICAL: This video is exactly \(durationString) long. ALL timestamps MUST be within 00:00 to \(durationString).
-
         ## Golden Rule: Aim for 3-5 segments per 15-minute video (fewer is better than more)
-
         ## Core Principles:
         1. **Group by purpose, not by platform** - If someone is planning a trip across 5 websites, that's ONE segment
         2. **Include interruptions in the description** - Don't create segments for brief distractions
@@ -333,27 +336,23 @@ final class GeminiDirectProvider: LLMProvider {
         4. **Combine related activities** - Multiple videos on the same topic = one segment
         5. **Think in terms of "sessions"** - What would you tell a friend you spent time doing?
         6. **Idle detection** - if the screen stays exactly the same for 5+ minutes, make sure to note that within the observation that the user was idle during that period and not performing and actions, but still be specific about what's currently on the screen.
-
         ## When to create a new segment:
         Only when the user switches to a COMPLETELY different purpose for MORE than 2-3 minutes:
         - Entertainment → Work
-        - Learning → Shopping  
+        - Learning → Shopping
         - Project A → Project B
         - Topic X → Unrelated Topic Y
-
         ## Format:
         ```json
         [
           {
             "startTimestamp": "MM:SS",
-            "endTimestamp": "MM:SS", 
+            "endTimestamp": "MM:SS",
             "description": "1-3 sentences describing what the user accomplished"
           }
         ]
         ```
-
         ## Examples:
-
         **GOOD - Properly condensed:**
         ```json
         [
@@ -363,7 +362,7 @@ final class GeminiDirectProvider: LLMProvider {
             "description": "User plans a trip to Japan, researching flights on multiple booking sites, reading hotel reviews, and watching YouTube videos about Tokyo neighborhoods. They briefly check email twice and respond to a text message during their research."
           },
           {
-            "startTimestamp": "06:45", 
+            "startTimestamp": "06:45",
             "endTimestamp": "10:30",
             "description": "User takes an online Spanish course, completing lesson exercises and watching grammar explanation videos. They use Google Translate to verify some phrases and briefly check Reddit when they get stuck on a difficult concept."
           },
@@ -374,7 +373,6 @@ final class GeminiDirectProvider: LLMProvider {
           }
         ]
         ```
-
         **BAD - Too many segments:**
         ```json
         [
@@ -385,7 +383,7 @@ final class GeminiDirectProvider: LLMProvider {
           },
           {
             "startTimestamp": "02:00",
-            "endTimestamp": "02:30", 
+            "endTimestamp": "02:30",
             "description": "User checks email"
           },
           {
@@ -400,7 +398,6 @@ final class GeminiDirectProvider: LLMProvider {
           }
         ]
         ```
-
         **ALSO BAD - Splitting brief interruptions:**
         ```json
         [
@@ -421,7 +418,6 @@ final class GeminiDirectProvider: LLMProvider {
           }
         ]
         ```
-
         **CORRECT way to handle the above:**
         ```json
         [
@@ -432,7 +428,6 @@ final class GeminiDirectProvider: LLMProvider {
           }
         ]
         ```
-
         Remember: The goal is to tell the story of what someone accomplished, not log every click. Group aggressively and only split when they truly change what they're doing for an extended period. If an activity is less than 2-3 minutes, it almost never deserves its own segment.
         """
 
@@ -451,27 +446,44 @@ final class GeminiDirectProvider: LLMProvider {
             do {
                 print("🔄 Video transcribe attempt \(attempt + 1)/\(maxRetries)")
                 let activeModel = modelState.current
-                let (response, usedModel) = try await geminiTranscribeRequest(
-                    fileURI: fileURI,
-                    mimeType: mimeType,
-                    prompt: finalTranscriptionPrompt,
-                    batchId: batchId,
-                    groupId: callGroupId,
-                    model: activeModel,
-                    attempt: attempt + 1
-                )
-
+                
+                let response: String
+                let usedModel: String
+        
+                if isUsingCustomBase {
+                    // Call the new inline data transcription method
+                    (response, usedModel) = try await transcribeVideoWithInlineData(
+                        videoData: videoData,
+                        mimeType: mimeType,
+                        prompt: finalTranscriptionPrompt,
+                        batchId: batchId,
+                        groupId: callGroupId,
+                        model: activeModel,
+                        attempt: attempt + 1
+                    )
+                } else {
+                    // Use the existing resumable upload flow
+                    let fileURI = try await uploadAndAwait(tempURL, mimeType: mimeType, key: apiKey).1
+                    (response, usedModel) = try await geminiTranscribeRequest(
+                        fileURI: fileURI,
+                        mimeType: mimeType,
+                        prompt: finalTranscriptionPrompt,
+                        batchId: batchId,
+                        groupId: callGroupId,
+                        model: activeModel,
+                        attempt: attempt + 1
+                    )
+                }
+        
                 let videoTranscripts = try parseTranscripts(response)
-
-                // Convert video transcripts to observations with proper Unix timestamps
-                // Validate and process observations
+        
+                // ... (The rest of the validation logic remains unchanged)
                 var hasValidationErrors = false
                 let observations = videoTranscripts.compactMap { chunk -> Observation? in
                     let startSeconds = parseVideoTimestamp(chunk.startTimestamp)
                     let endSeconds = parseVideoTimestamp(chunk.endTimestamp)
-
-                    // Validate timestamps are within video duration (with 2 minute tolerance)
-                    let tolerance: TimeInterval = 120.0 // 2 minutes
+        
+                    let tolerance: TimeInterval = 120.0
                     if Double(startSeconds) < -tolerance || Double(endSeconds) > videoDuration + tolerance {
                         print("❌ VALIDATION ERROR: Observation timestamps exceed video duration!")
                         hasValidationErrors = true
@@ -479,10 +491,10 @@ final class GeminiDirectProvider: LLMProvider {
                     }
                     let startDate = batchStartTime.addingTimeInterval(TimeInterval(startSeconds))
                     let endDate = batchStartTime.addingTimeInterval(TimeInterval(endSeconds))
-
+        
                     return Observation(
                         id: nil,
-                        batchId: 0, // Will be set when saved
+                        batchId: 0,
                         startTs: Int(startDate.timeIntervalSince1970),
                         endTs: Int(endDate.timeIntervalSince1970),
                         observation: chunk.description,
@@ -491,38 +503,36 @@ final class GeminiDirectProvider: LLMProvider {
                         createdAt: Date()
                     )
                 }
-
-                // If we had validation errors, throw to trigger retry
+        
                 if hasValidationErrors {
                     throw GeminiAPIHelper.APIError.validationFailed(reason: "Gemini generated observations with timestamps exceeding video duration. Video is \(durationString) long but observations extended beyond this.")
                 }
-
-                // Ensure we have at least one observation
+        
                 if observations.isEmpty {
                     throw GeminiAPIHelper.APIError.validationFailed(reason: "No valid observations generated after filtering out invalid timestamps")
                 }
-
-                // SUCCESS! All validations passed
+        
                 print("✅ Video transcription succeeded on attempt \(attempt + 1)")
                 finalResponse = response
                 finalObservations = observations
                 finalUsedModel = usedModel
                 break
-
+        
             } catch {
+                // ... (The existing error handling and retry logic remains unchanged)
                 lastError = error
                 print("❌ Attempt \(attempt + 1) failed: \(error.localizedDescription)")
-
+        
                 var appliedFallback = false
                 if let nsError = error as NSError?,
                    nsError.domain == "GeminiError",
                    Self.capacityErrorCodes.contains(nsError.code),
                    let transition = modelState.advance() {
-
+        
                     appliedFallback = true
                     let reason = fallbackReason(for: nsError.code)
                     print("↘️ Downgrading to \(transition.to.rawValue) after \(nsError.code)")
-
+        
                     Task { @MainActor in
                         AnalyticsService.shared.capture("llm_model_fallback", [
                             "provider": "gemini",
@@ -534,18 +544,13 @@ final class GeminiDirectProvider: LLMProvider {
                         ])
                     }
                 }
-
+        
                 if !appliedFallback {
-                    // Normal error handling with backoff
                     let strategy = classifyError(error)
-
-                    // Check if we should retry
                     if strategy == .noRetry || attempt >= maxRetries - 1 {
                         print("🚫 Not retrying: strategy=\(strategy), attempt=\(attempt + 1)/\(maxRetries)")
                         throw error
                     }
-
-                    // Apply appropriate delay based on error type
                     let delay = delayForStrategy(strategy, attempt: attempt)
                     if delay > 0 {
                         print("⏳ Waiting \(String(format: "%.1f", delay))s before retry (strategy: \(strategy))")
@@ -553,10 +558,9 @@ final class GeminiDirectProvider: LLMProvider {
                     }
                 }
             }
-
+        
             attempt += 1
         }
-
         // Check if we succeeded
         guard !finalObservations.isEmpty else {
             throw lastError ?? GeminiAPIHelper.APIError.transcriptionFailed(reason: "Video transcription failed after \(maxRetries) attempts")
@@ -570,6 +574,98 @@ final class GeminiDirectProvider: LLMProvider {
         )
 
         return (finalObservations, log)
+    }
+
+    private func transcribeVideoWithInlineData(videoData: Data, mimeType: String, prompt: String, batchId: Int64?, groupId: String, model: GeminiModel, attempt: Int) async throws -> (String, String) {
+        let base64Video = videoData.base64EncodedString()
+
+        let transcriptionSchema: [String:Any] = [
+          "type":"ARRAY",
+          "items": [
+            "type":"OBJECT",
+            "properties":[
+              "startTimestamp":["type":"STRING"],
+              "endTimestamp":  ["type":"STRING"],
+              "description":   ["type":"STRING"]
+            ],
+            "required":["startTimestamp","endTimestamp","description"],
+            "propertyOrdering":["startTimestamp","endTimestamp","description"]
+          ]
+        ]
+
+        let generationConfig: [String: Any] = [
+            "temperature": 0.3,
+            "maxOutputTokens": 8192,
+            "responseMimeType": "application/json",
+            "responseSchema": transcriptionSchema
+        ]
+
+        let requestBody: [String: Any] = [
+            "contents": [["parts": [
+                ["text": prompt],
+                ["inline_data": ["mime_type": mimeType, "data": base64Video]]
+            ]]],
+            "generationConfig": generationConfig
+        ]
+
+        let endpoint = try buildRequestURL(path: "/v1beta/models/\(model.rawValue):generateContent")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        setAuthHeader(on: &request)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 180 // 3 minutes timeout for inline data
+
+        let requestStart = Date()
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody)
+
+            logCurlCommand(context: "transcribe.inline.generateContent", url: endpoint.absoluteString, requestBody: requestBody)
+            logRequestTiming(context: "transcribe.inline")
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw GeminiAPIHelper.APIError.invalidResponse
+            }
+
+            let ctx = LLMCallContext(
+                batchId: batchId, callGroupId: groupId, attempt: attempt, provider: "gemini",
+                model: model.rawValue, operation: "transcribe_inline", requestMethod: request.httpMethod,
+                requestURL: request.url, requestHeaders: request.allHTTPHeaderFields,
+                requestBody: request.httpBody, startedAt: requestStart
+            )
+            let httpInfo = LLMHTTPInfo(httpStatus: httpResponse.statusCode, responseHeaders: httpResponse.allHeaderFields as? [String: String] ?? [:], responseBody: data)
+
+            if httpResponse.statusCode >= 400 {
+                var errorMessage = "HTTP \(httpResponse.statusCode) error"
+                if let jsonError = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let error = jsonError["error"] as? [String: Any],
+                   let message = error["message"] as? String {
+                    errorMessage = message
+                }
+                LLMLogger.logFailure(ctx: ctx, http: httpInfo, finishedAt: Date(), errorDomain: "HTTPError", errorCode: httpResponse.statusCode, errorMessage: errorMessage)
+                throw GeminiAPIHelper.APIError.httpError(statusCode: httpResponse.statusCode, message: errorMessage)
+            }
+
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let candidates = json["candidates"] as? [[String: Any]],
+                  let firstCandidate = candidates.first,
+                  let content = firstCandidate["content"] as? [String: Any],
+                  let parts = content["parts"] as? [[String: Any]],
+                  let firstPart = parts.first,
+                  let text = firstPart["text"] as? String else {
+                LLMLogger.logFailure(ctx: ctx, http: httpInfo, finishedAt: Date(), errorDomain: "ParseError", errorCode: 9, errorMessage: "Invalid response format")
+                throw GeminiAPIHelper.APIError.parsingFailed(description: "Invalid response format from inline transcription.")
+            }
+
+            LLMLogger.logSuccess(ctx: ctx, http: httpInfo, finishedAt: Date())
+            return (text, model.rawValue)
+                
+        } catch {
+            logGeminiFailure(context: "transcribe.inline.catch", attempt: attempt, response: nil, data: nil, error: error)
+            throw error
+        }
     }
     
     // MARK: - Error Classification for Unified Retry
@@ -1127,7 +1223,7 @@ final class GeminiDirectProvider: LLMProvider {
         logGeminiFailure(context: "uploadResumable(finalize)", response: uploadResponse, data: uploadResponseData, error: nil)
         throw GeminiAPIHelper.APIError.parsingFailed(description: "Failed to parse upload response")
     }
-    
+
     private func getFileStatus(fileURI: String) async throws -> String {
         guard var components = URLComponents(string: fileURI) else {
             throw GeminiAPIHelper.APIError.invalidURL(description: "Invalid file URI for getFileStatus: \(fileURI)")
@@ -1146,15 +1242,16 @@ final class GeminiDirectProvider: LLMProvider {
         
         let (data, response) = try await URLSession.shared.data(for: request)
 
-        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let state = json["state"] as? String {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let file = json["file"] as? [String: Any],
+           let state = file["state"] as? String {
             return state
         }
         // Unexpected response – log for diagnosis but still return UNKNOWN
         logGeminiFailure(context: "getFileStatus", response: response, data: data, error: nil)
         return "UNKNOWN"
     }
-    
+
     private func geminiTranscribeRequest(fileURI: String, mimeType: String, prompt: String, batchId: Int64?, groupId: String, model: GeminiModel, attempt: Int) async throws -> (String, String) {
         let transcriptionSchema: [String:Any] = [
           "type":"ARRAY",
@@ -2018,8 +2115,8 @@ final class GeminiDirectProvider: LLMProvider {
         
         if components.count == 2 {
             // MM:SS format
-            let minutes = Int(components[0]) ?? 0
-            let seconds = Int(components[1]) ?? 0
+            let minutes = Int(components[1]) ?? 0
+            let seconds = Int(components[2]) ?? 0
             return minutes * 60 + seconds
         } else if components.count == 3 {
             // HH:MM:SS format
